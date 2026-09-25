@@ -116,7 +116,14 @@ class BootState {
       Assets.sprite(R.ctx, 'logo', 960, 520, 1100, 672, 0);
     if (!drew) {
       R.text('SCRAPCORE', 960, 490, 130, CONFIG.COLOR.yellow);
-      R.text('ZERO', 960, 610, 96, CONFIG.COLOR.cyan);
+      // D372: THIS SAID ZERO ON A PUBLIC WEB ADDRESS. The fork's branding
+      // pass renamed every string that spelt the old game out in one piece;
+      // this one is split across two draws, so scanning for 'SCRAPCORE ZERO'
+      // never saw it and a person had to. Measured, not guessed: BREAKLANDS
+      // is six characters longer than ZERO and a fixed size is how the FULL
+      // banner ran into the carry readout last block.
+      R.text('BREAKLANDS', 960, 610, R.fitText('BREAKLANDS', 96, 1760),
+             CONFIG.COLOR.cyan);
     }
     if (typeof UI !== 'undefined' && UI.fitInto) {
       UI.fitInto(R.ctx, 'logo_studio', 960, 760, 210, 150);
