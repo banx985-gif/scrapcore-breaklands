@@ -492,6 +492,8 @@ class GameState {
     this.obstacles = World.obstacles;
     this.setEntities(World.entities);
     Machine.world = { arena: this.arena, obstacles: this.obstacles };
+    // What this copy is a copy OF. Compared once a frame; see World.rev.
+    this._worldRev = World.rev;
   }
 
   onResize() { this.buildButtons(); }
@@ -1129,6 +1131,18 @@ class GameState {
     // the world lists are re-adopted and the order indices rebuilt, which is
     // the only moment that work happens.
     if (World.update(this.player.x, this.player.y)) this._adoptWorld();
+    // AND ANYTHING ELSE THAT CHANGED THE WORLD'S LIST (D373, question 24).
+    //
+    // Streaming is not the only thing that rebuilds World.entities — a hulk
+    // left by a kill, a thrown decoy, a mission object, a wreck released
+    // after stripping — and for all of those this state was drawing from a
+    // stale copy. A wreck standing in front of you and not drawn is the bug
+    // D370 photographed.
+    //
+    // One integer compare a frame (0.0002 ms measured), and the rebuild it
+    // guards is 0.13% of a frame and happens at most once per kill. The cost
+    // was measured before this was committed: tests/measure_adopt.js.
+    else if (World.rev !== this._worldRev) this._adoptWorld();
 
     this.player.update(dt, this.arena, this.obstacles);
     EmergencyBlaster.update(dt, this.player);

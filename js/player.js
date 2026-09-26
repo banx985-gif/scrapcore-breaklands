@@ -561,6 +561,31 @@ class PlayerCore {
     if (!coreArt)
     R.circle(this.x, this.y, this.radius, bodyCol, CONFIG.COLOR.ink, 9);
 
+    // DECALS, WORN (D373, question 10).
+    //
+    // `DECALS` has described twenty-four marks since Block 12 and
+    // `Paint.addDecal` has been able to put one on a machine for just as
+    // long. This is the line that makes a mark a player chose into a mark a
+    // player sees — the same hole `Paint.colourFor` was in until D-whenever,
+    // and the same one-line fix.
+    //
+    // AFTER the body and BEFORE the reactor ring below, because the ring is
+    // "the load-bearing visual affordance in the ENTIRE GAME" and a cosmetic
+    // mark does not get to sit on top of it. Not drawn while the hit flash is
+    // up either: the flash is a readout.
+    //
+    // SIZED OFF THE HULL THAT IS DRAWN, NOT OFF `radius`. The collision
+    // radius is the BODY; a Jackrig model is the whole machine including its
+    // socket ring, which is why `coreSize` above is read from the set's own
+    // recorded reach rather than from `radius * 2.5`. Placed off `radius`,
+    // the four marks landed inside the reactor ring and the first screenshot
+    // showed the SCRAP MARK sitting under it.
+    if (this.flash <= 0 && typeof DecalArt !== 'undefined' &&
+        typeof Rigs !== 'undefined' && Rigs.vehicleId) {
+      DecalArt.drawWorn(ctx, Rigs.vehicleId(), this.x, this.y,
+                        Math.max(this.radius, coreSize * 0.5));
+    }
+
     // Emergency blaster barrel showing aim direction (plan §16)
     ctx.save();
     ctx.translate(this.x, this.y);

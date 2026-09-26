@@ -5,7 +5,7 @@
 //
 // VERSION is stamped by publish.ps1 on every publish. A new version makes the
 // phone install this worker fresh and throw the old copies away.
-const VERSION = '20260925-183500';
+const VERSION = '20260926-195820';
 const CACHE = 'scrapcore-breaklands-' + VERSION;
 
 // The page itself plus the manifest, so the app opens offline straight away.

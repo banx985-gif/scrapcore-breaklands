@@ -77,6 +77,11 @@ const GARAGE_UI = {
   // better than jumping somewhere surprising.
   DIR_MIN: 0.34,
   REPEAT: 0.19,
+  // HOW FAR UP FROM THE BOTTOM THE HINT LINE SITS. A constant because two
+  // places need it now: the draw, and the decal note above it that has to
+  // stop before it (D373). It was a bare 132 in the draw and a guess
+  // everywhere else, and the guess put a note through the hint.
+  HINT_UP: 132,
 
   FILTERS: ['ALL', 'WEAPON', 'DEFENCE', 'MOBILITY', 'UTILITY', 'STRUCTURE'],
   SORTS: ['NEW', 'NAME', 'POWER', 'WEIGHT'],
@@ -759,7 +764,7 @@ class GarageState {
       R.text(this.toast, (s.left + s.right) / 2, s.bottom - 176, 30,
         CONFIG.COLOR.orange);
     }
-    R.smallText(this._hint(), (s.left + s.right) / 2, s.bottom - 132, 22,
+    R.smallText(this._hint(), (s.left + s.right) / 2, s.bottom - GARAGE_UI.HINT_UP, 22,
       CONFIG.COLOR.grid, 'center');
     this.buttons.draw();
   }
@@ -786,6 +791,19 @@ class GarageState {
              'SHOULDERS CHANGE TAB  •  DASH LEAVES';
     }
     if (this.tab === 'PAINT') {
+      // SPECIAL IS A DIFFERENT ACTION ON EACH ROW (D373), so the line says
+      // which one. A single hint covering three different buttons is how a
+      // player learns that SPECIAL does something unpredictable.
+      const rows = this._paintRows();
+      const kind = (rows[Math.min(this.slot, rows.length - 1)] || {}).kind;
+      if (kind === 'decals') {
+        return 'MAGNET WEARS OR TAKES OFF  •  SPECIAL STRIPS THEM ALL  •  ' +
+               'SHOULDERS CHANGE TAB  •  DASH LEAVES';
+      }
+      if (kind === 'presets') {
+        return 'MAGNET SAVES OR APPLIES  •  SPECIAL FORGETS ONE  •  ' +
+               'SHOULDERS CHANGE TAB  •  DASH LEAVES';
+      }
       return 'MAGNET PAINTS OR RESETS  •  SPECIAL ROLLS  •  ' +
              'SHOULDERS CHANGE TAB  •  DASH LEAVES';
     }
@@ -1024,30 +1042,129 @@ class GarageState {
     return out;
   }
 
+  // THE LEFT PANE IS A LIST OF PLACES (D373, question 10).
+  //
+  // The shop had four rows — BODY, TRIM, METAL, DARK — and two of Block 12's
+  // three features had nowhere to live: `DECALS` described twenty-four marks
+  // and `Paint.presets` saved colourways, and neither was reachable. That is
+  // the third time this project has found a finished system with no way in.
+  //
+  // Two more rows rather than a third screen, on purpose. This file's own
+  // note says GADGETS and PAINT share a shape "because they are the same
+  // decision: pick a place on the left, pick a thing on the right. A player
+  // who has learned one of these screens should not have to learn a third."
+  // Sub-tabs inside a tab would have been that third thing. DECALS and
+  // PRESETS are places; what goes on them is a thing; the gesture is the one
+  // already learned.
+  _paintRows() {
+    const out = this._paintSlots().map(id => ({ kind: 'slot', id }));
+    out.push({ kind: 'decals', id: 'decals' });
+    out.push({ kind: 'presets', id: 'presets' });
+    return out;
+  }
+
+  // THE DECALS YOU OWN, GROUPED THE WAY THE CATALOGUE GROUPS THEM.
+  //
+  // Same shape as `_paintSets`, so up and down change group and left and
+  // right walk inside one — identical to the palette next door. The groups
+  // are the catalogue's own (`numbers`, `industrial`, `civic`, `commercial`,
+  // `network`, `personal`), never invented here.
+  //
+  // A decal with no mark drawn for it is LEFT OUT rather than shown blank: a
+  // row a player can select and wear and then not see is worse than a row
+  // that is not there. `tests/test_paint.js` asserts the catalogue and the
+  // artwork agree, so this can never quietly hide half the list.
+  _decalGroups() {
+    if (typeof DECALS === 'undefined' || typeof Paint === 'undefined') return [];
+    const by = {};
+    const order = [];
+    for (const id of Object.keys(DECALS)) {
+      if (!Paint.decalUnlocked(id)) continue;
+      if (typeof DecalArt !== 'undefined' && !DecalArt.has(id)) continue;
+      const g = DECALS[id].group || 'other';
+      if (!by[g]) { by[g] = { id: g, decals: [] }; order.push(by[g]); }
+      by[g].decals.push(id);
+    }
+    return order;
+  }
+
+  // SAVED COLOURWAYS, plus the row that makes one. The SAVE row is first
+  // because an empty preset list with no way to fill it is the state this
+  // screen would otherwise open in forever.
+  _presetRows() {
+    const out = [{ save: true }];
+    if (typeof Paint !== 'undefined') {
+      for (const p of Paint.presets()) out.push({ preset: p });
+    }
+    return out;
+  }
+
+  // A NAME FOR A PRESET, WITHOUT A KEYBOARD.
+  //
+  // There is no text entry in this game and there should not be one: it is a
+  // pad-and-thumb build. So a preset is named after the colour you see from
+  // across a district, which is what BODY means in this shop — and a second
+  // preset on the same body colour gets a number rather than silently
+  // replacing the first.
+  _presetName(who) {
+    const body = Paint.slot(who, 'body');
+    const base = body ? this._hexName(body) : 'AS FOUND';
+    const taken = Paint.presets().map(p => p.name);
+    if (taken.indexOf(base) < 0) return base;
+    for (let i = 2; i < 99; i++) {
+      if (taken.indexOf(base + ' ' + i) < 0) return base + ' ' + i;
+    }
+    return base + ' *';
+  }
+
   _updatePaint(fresh, m) {
     if (typeof Paint === 'undefined') return;
-    const slots = this._paintSlots();
-    const sets = this._paintSets();
-    if (this.slot >= slots.length) this.slot = 0;
+    const rows = this._paintRows();
+    const who = this._vehicle();
+    if (this.slot >= rows.length) this.slot = 0;
+    const row = rows[this.slot];
+
+    // WHAT IS ON THE RIGHT depends on what is picked on the left. One list,
+    // whatever it is made of, so the movement code below is written once.
+    let groups;                       // [{ id, items: [...] }]
+    if (row.kind === 'decals') {
+      groups = this._decalGroups().map(g => ({ id: g.id, items: g.decals }));
+    } else if (row.kind === 'presets') {
+      groups = [{ id: 'presets', items: this._presetRows() }];
+    } else {
+      groups = this._paintSets().map(s => ({ id: s.id, items: s.colours }));
+    }
     if (this.paintSet === undefined) this.paintSet = 0;
-    if (sets.length) this.paintSet = Math.min(this.paintSet, sets.length - 1);
-    const inSet = sets.length ? sets[this.paintSet].colours : [];
-    if (this.listIdx >= inSet.length) this.listIdx = 0;
+    if (groups.length) this.paintSet = Math.min(this.paintSet, groups.length - 1);
+    else this.paintSet = 0;
+    const items = groups.length ? groups[this.paintSet].items : [];
+    if (this.listIdx >= items.length) this.listIdx = 0;
 
     if (fresh) {
       if (Math.abs(m.dy) > Math.abs(m.dx)) {
         const d = m.dy > 0 ? 1 : -1;
         if (this.pane === 0) {
-          this.slot = (this.slot + d + slots.length) % slots.length;
-        } else if (sets.length) {
-          this.paintSet = (this.paintSet + d + sets.length) % sets.length;
-          this.listIdx = Math.min(this.listIdx, sets[this.paintSet].colours.length - 1);
+          this.slot = (this.slot + d + rows.length) % rows.length;
+          // Moving to a different KIND of row makes the right pane a
+          // different list, so the cursor in it has to come home. Without
+          // this, walking from BODY (colour 5 of 8) to PRESETS selected
+          // preset five, which does not exist.
+          this.paintSet = 0; this.listIdx = 0;
+        } else if (groups.length > 1) {
+          this.paintSet = (this.paintSet + d + groups.length) % groups.length;
+          this.listIdx = Math.min(this.listIdx,
+            groups[this.paintSet].items.length - 1);
+        } else if (items.length) {
+          // ONE GROUP (presets): up and down walk the list itself, because a
+          // list that only moves sideways is a list a player will not find
+          // the bottom of.
+          this.listIdx = (this.listIdx + d + items.length) % items.length;
         }
       } else if (Math.abs(m.dx) > 0.6) {
         if (this.pane === 0) { if (m.dx > 0) this.pane = 1; }
         else if (m.dx < 0 && this.listIdx === 0) this.pane = 0;
-        else if (inSet.length) {
-          this.listIdx = Math.max(0, Math.min(inSet.length - 1,
+        else if (items.length) {
+          this.listIdx = Math.max(0, Math.min(items.length - 1,
             this.listIdx + (m.dx > 0 ? 1 : -1)));
         }
       }
@@ -1055,35 +1172,101 @@ class GarageState {
     }
 
     if (Controls.magnet.justPressed) {
-      const who = this._vehicle();
-      const sid = slots[this.slot];
       if (this.pane === 0) {
-        // MAGNET on a painted slot puts it back to AS FOUND. That is
-        // `perSlotReset: true`, and it is not the same as painting it a dark
-        // colour: an unpainted panel is whatever the part is, and the drawing
-        // code decides what that looks like.
-        if (Paint.slot(who, sid) !== null) {
-          Paint.reset(who, sid);
-          this._toast(sid.toUpperCase() + ' — AS FOUND');
+        if (row.kind === 'slot') {
+          // MAGNET on a painted slot puts it back to AS FOUND. That is
+          // `perSlotReset: true`, and it is not the same as painting it a
+          // dark colour: an unpainted panel is whatever the part is, and the
+          // drawing code decides what that looks like.
+          if (Paint.slot(who, row.id) !== null) {
+            Paint.reset(who, row.id);
+            this._toast(row.id.toUpperCase() + ' — AS FOUND');
+          } else {
+            this.pane = 1;
+            this._toast('PICK A COLOUR');
+          }
         } else {
           this.pane = 1;
-          this._toast('PICK A COLOUR');
+          this._toast(row.kind === 'decals' ? 'PICK A MARK' : 'PICK A COLOURWAY');
         }
         return;
       }
-      if (!inSet.length) {
+
+      // ---- the right pane ------------------------------------------------
+      if (row.kind === 'decals') {
+        if (!items.length) {
+          this._toast('NO MARKS YET. THEY ARE FOUND, NEVER BOUGHT.');
+          return;
+        }
+        const id = items[Math.min(this.listIdx, items.length - 1)];
+        // MAGNET TOGGLES. Wearing and taking off are the same gesture on the
+        // same row, because a mark you can put on and cannot find how to take
+        // off is a mark you will not risk trying.
+        const worn = Paint.decals(who).findIndex(d => d.id === id);
+        if (worn >= 0) {
+          Paint.removeDecal(who, worn);
+          if (typeof Progress !== 'undefined' && Progress.save) Progress.save();
+          this._toast(DecalArt.name(id) + ' — TAKEN OFF');
+        } else if (Paint.addDecal(who, id)) {
+          this._toast(DecalArt.name(id) + ' — WORN');
+        } else {
+          // addDecal refuses for two reasons and they are different reasons.
+          const D = DECALS[id] || {};
+          this._toast(Paint.decals(who).length >= Paint.maxDecals(who)
+            ? 'ROOM FOR ' + Paint.maxDecals(who) + ' MARKS. TAKE ONE OFF FIRST.'
+            : (D.unique ? 'THERE IS ONLY ONE OF THOSE' : 'NOT YOURS'));
+        }
+        return;
+      }
+
+      if (row.kind === 'presets') {
+        const it = items[Math.min(this.listIdx, items.length - 1)];
+        if (!it) return;
+        if (it.save) {
+          const name = this._presetName(who);
+          if (Paint.savePreset(name, who)) this._toast('SAVED AS ' + name);
+          else this._toast('NOTHING TO SAVE');
+        } else if (Paint.applyPreset(it.preset.name, who)) {
+          this._toast(it.preset.name + ' — APPLIED');
+        } else {
+          this._toast('THAT COLOURWAY IS NOT YOURS ANY MORE');
+        }
+        return;
+      }
+
+      if (!items.length) {
         this._toast('NO COLOURS YET. THEY ARE FOUND, NEVER BOUGHT.');
         return;
       }
-      const c = inSet[Math.min(this.listIdx, inSet.length - 1)];
-      if (Paint.setSlot(who, sid, c.hex)) {
-        this._toast(sid.toUpperCase() + ' — ' + this._colourName(c));
+      const c = items[Math.min(this.listIdx, items.length - 1)];
+      if (Paint.setSlot(who, row.id, c.hex)) {
+        this._toast(row.id.toUpperCase() + ' — ' + this._colourName(c));
       } else {
         this._toast('THAT COLOUR IS NOT YOURS');
       }
     }
+
     if (Controls.special && Controls.special.justPressed) {
-      if (Paint.randomise(this._vehicle())) this._toast('ROLLED');
+      // SPECIAL means "the big action for what is in front of you", which is
+      // a different action on each row and is written on the hint line.
+      if (row.kind === 'decals') {
+        const n = Paint.decals(who).length;
+        if (!n) { this._toast('NO MARKS ON IT'); return; }
+        while (Paint.decals(who).length) Paint.removeDecal(who, 0);
+        if (typeof Progress !== 'undefined' && Progress.save) Progress.save();
+        this._toast('STRIPPED ' + n + ' MARK' + (n === 1 ? '' : 'S'));
+      } else if (row.kind === 'presets') {
+        const it = items[Math.min(this.listIdx, items.length - 1)];
+        if (!it || it.save) { this._toast('PICK A COLOURWAY TO FORGET'); return; }
+        const list = Paint.presets();
+        const at = list.findIndex(p => p.name === it.preset.name);
+        if (at >= 0) {
+          list.splice(at, 1);
+          if (typeof Progress !== 'undefined' && Progress.save) Progress.save();
+          this._toast(it.preset.name + ' — FORGOTTEN');
+          this.listIdx = Math.max(0, this.listIdx - 1);
+        }
+      } else if (Paint.randomise(who)) this._toast('ROLLED');
       else this._toast('NOT ENOUGH COLOURS TO ROLL');
     }
   }
@@ -1098,14 +1281,29 @@ class GarageState {
     const s = Display.safe;
     const ctx = R.ctx;
     const who = this._vehicle();
-    const slots = this._paintSlots();
-    const sets = this._paintSets();
+    const rows = this._paintRows();
+    if (this.slot >= rows.length) this.slot = 0;
+    const row = rows[this.slot];
     // R.smallText's baseline is TOP, so a heading placed a comfortable-looking
     // 16px above a box renders INSIDE it. Every heading here sits a full line
     // clear, and the two-line header runs TITLE ON TOP: the first draft put
     // the caveat above the title and the screen read as a warning with a name
     // under it.
-    const lx = s.left + 60, ly = this._paneTop() + 70, lw = 470, rh = 88;
+    const lx = s.left + 60, ly = this._paneTop() + 70, lw = 470;
+    // SIX ROWS NOW, NOT FOUR (D373), AND THE FLOOR IS READ, NOT GUESSED.
+    //
+    // The row height was a flat 88 with a 12 gap and four rows. Six of those
+    // run past the bottom of the column -- and the first version of this
+    // computed the space against `s.bottom - 250`, which is a number I chose,
+    // and the COLOURWAYS row came out UNDERNEATH the POWER/HEAT/WEIGHT panel.
+    // Only the screenshot could see it: every row was drawn, none overlapped
+    // in the code's own reckoning, and the panel is drawn afterwards on top.
+    //
+    // `_readoutRect()` is where that panel actually is. Asking it means a
+    // seventh place, or the panel moving, cannot put a row under it again.
+    // Same fault, and the same fix, as the FULL banner in D370.
+    const avail = (this._readoutRect().y - 16) - ly;
+    const rh = Math.max(54, Math.min(88, Math.floor(avail / rows.length) - 12));
 
     R.smallText('PAINT  —  ' + this._vehicleName(),
       lx, ly - 70, 24, this.pane === 0 ? CONFIG.COLOR.yellow : CONFIG.COLOR.steel);
@@ -1115,18 +1313,13 @@ class GarageState {
     // has never had anything to enforce. A screen stating a protection that
     // does not exist is worse than one saying nothing.
     //
-    // What IS true, and checked by tools/paintcheck.js over every colour in
-    // every set: the paint takes the part's brightness and gives it your
-    // hue, and no colour in the palette can put you in enemy red.
-    // AND THE EMISSIVE RULE IS TRUE AGAIN. The screen said this once and it
-    // was a promise the build did not keep -- no part carried the flag -- so
-    // it was replaced with the guarantee that WAS true. Aaron named what
-    // glows on 7 September and fifteen parts carry it now, so the screen can
-    // say the whole thing.
+    // AND THE EMISSIVE RULE IS TRUE AGAIN. Aaron named what glows on
+    // 7 September and fifteen parts carry it now, so the screen can say the
+    // whole thing.
     R.smallText('COSMETIC ONLY  —  THE GLOW IS NEVER PAINTED, AND NO PAINT READS RED',
       lx, ly - 40, 20, CONFIG.COLOR.grid);
 
-    slots.forEach((sid, i) => {
+    rows.forEach((r0, i) => {
       const y = ly + i * (rh + 12);
       const on = this.pane === 0 && i === this.slot;
       ctx.fillStyle = on ? '#2c3a66' : '#1a2138';
@@ -1134,26 +1327,80 @@ class GarageState {
       ctx.strokeStyle = on ? CONFIG.COLOR.yellow : CONFIG.COLOR.steel;
       ctx.lineWidth = on ? 5 : 3;
       ctx.strokeRect(lx, y, lw, rh);
-      const hex = Paint.slot(who, sid);
-      // THE SWATCH IS THE READOUT. A hex string is not a colour to anybody.
-      ctx.fillStyle = hex || '#232b44';
-      ctx.fillRect(lx + 14, y + 16, 56, rh - 32);
-      ctx.strokeStyle = CONFIG.COLOR.ink;
-      ctx.lineWidth = 4;
-      ctx.strokeRect(lx + 14, y + 16, 56, rh - 32);
-      R.smallText(sid.toUpperCase(), lx + 90, y + 18, 26,
-        hex ? CONFIG.COLOR.cyan : '#5a6890');
-      // NOT CONFIG.COLOR.grid. It is #1d2540 and the box under it is #1a2138:
-      // three points of luminance apart, which is not a dim label, it is an
-      // invisible one. The GADGETS tab next door had been printing its power
-      // figures into the same void since Block 11 and nobody could have known
-      // from a test, because the text IS drawn and the code IS correct.
-      R.smallText(hex ? this._hexName(hex) : 'AS FOUND', lx + 90, y + 52, 20,
-        hex ? CONFIG.COLOR.steel : '#5a6890');
+
+      if (r0.kind === 'slot') {
+        const hex = Paint.slot(who, r0.id);
+        // THE SWATCH IS THE READOUT. A hex string is not a colour to anybody.
+        ctx.fillStyle = hex || '#232b44';
+        ctx.fillRect(lx + 14, y + 12, 56, rh - 24);
+        ctx.strokeStyle = CONFIG.COLOR.ink;
+        ctx.lineWidth = 4;
+        ctx.strokeRect(lx + 14, y + 12, 56, rh - 24);
+        R.smallText(r0.id.toUpperCase(), lx + 90, y + 10, 26,
+          hex ? CONFIG.COLOR.cyan : '#5a6890');
+        // NOT CONFIG.COLOR.grid. It is #1d2540 and the box under it is
+        // #1a2138: three points of luminance apart, which is not a dim label,
+        // it is an invisible one.
+        R.smallText(hex ? this._hexName(hex) : 'AS FOUND', lx + 90, y + rh - 30, 20,
+          hex ? CONFIG.COLOR.steel : '#5a6890');
+        return;
+      }
+
+      if (r0.kind === 'decals') {
+        // THE MARKS ON THE MACHINE, drawn in the row rather than counted in
+        // it: four little stamps say which four at a glance, and a number
+        // does not.
+        const worn = Paint.decals(who);
+        const mid = y + rh / 2;
+        for (let d = 0; d < Paint.maxDecals(who); d++) {
+          const bx = lx + 30 + d * 44;
+          ctx.fillStyle = '#232b44';
+          ctx.fillRect(bx - 17, mid - 17, 34, 34);
+          ctx.strokeStyle = CONFIG.COLOR.ink; ctx.lineWidth = 3;
+          ctx.strokeRect(bx - 17, mid - 17, 34, 34);
+          if (worn[d] && typeof DecalArt !== 'undefined') {
+            DecalArt.draw(ctx, worn[d], bx, mid, 12);
+          }
+        }
+        R.smallText('DECALS', lx + 226, y + 10, 26,
+          worn.length ? CONFIG.COLOR.cyan : '#5a6890');
+        R.smallText(worn.length + ' OF ' + Paint.maxDecals(who), lx + 226,
+          y + rh - 30, 20, worn.length ? CONFIG.COLOR.steel : '#5a6890');
+        return;
+      }
+
+      // presets
+      const n = Paint.presets().length;
+      ctx.fillStyle = '#232b44';
+      ctx.fillRect(lx + 14, y + 12, 56, rh - 24);
+      // The four slots of the SELECTED colourway, as four stripes, so the row
+      // shows a colourway rather than the word for one.
+      const sel = this._presetRows()[this.listIdx];
+      const showing = (row.kind === 'presets' && sel && sel.preset)
+        ? sel.preset.slots : Paint.of(who).slots;
+      this._paintSlots().forEach((sid, k) => {
+        if (!showing[sid]) return;
+        ctx.fillStyle = showing[sid];
+        ctx.fillRect(lx + 14, y + 12 + k * ((rh - 24) / 4), 56, (rh - 24) / 4);
+      });
+      ctx.strokeStyle = CONFIG.COLOR.ink; ctx.lineWidth = 4;
+      ctx.strokeRect(lx + 14, y + 12, 56, rh - 24);
+      R.smallText('COLOURWAYS', lx + 90, y + 10, 26,
+        n ? CONFIG.COLOR.cyan : '#5a6890');
+      R.smallText(n ? (n + ' SAVED') : 'NONE SAVED', lx + 90, y + rh - 30, 20,
+        n ? CONFIG.COLOR.steel : '#5a6890');
     });
 
-    // ---- the palette ------------------------------------------------------
     const rx = s.left + (s.right - s.left) * 0.55;
+    if (row.kind === 'decals') return this._drawDecalPane(rx, ly, who);
+    if (row.kind === 'presets') return this._drawPresetPane(rx, ly, who);
+    return this._drawColourPane(rx, ly, who);
+  }
+
+  _drawColourPane(rx, ly, who) {
+    const s = Display.safe;
+    const ctx = R.ctx;
+    const sets = this._paintSets();
     const total = sets.reduce((a, b) => a + b.colours.length, 0);
     R.smallText('COLOURS YOU OWN  —  ' + total,
       rx, ly - 70, 24, this.pane === 1 ? CONFIG.COLOR.yellow : CONFIG.COLOR.steel);
@@ -1178,9 +1425,9 @@ class GarageState {
         rx, y, 19, onSet ? CONFIG.COLOR.yellow : CONFIG.COLOR.steel);
       y += 26;
       set.colours.forEach((c, ci) => {
-        const col = ci % cols, row = Math.floor(ci / cols);
+        const col = ci % cols, rowN = Math.floor(ci / cols);
         const x = rx + col * (sw + 10);
-        const sy = y + row * (sw + 10);
+        const sy = y + rowN * (sw + 10);
         if (sy > s.bottom - 230) return;
         const on = onSet && ci === this.listIdx;
         ctx.fillStyle = c.hex;
@@ -1200,6 +1447,155 @@ class GarageState {
         ((COLOUR_SETS[cur.id] || {}).name || cur.set).toUpperCase(),
         rx, s.bottom - 210, 24, CONFIG.COLOR.cyan);
     }
+  }
+
+  // THE MARKS (D373, question 10). Laid out exactly like the palette — the
+  // group label, then a wrapped grid under it — because it is the same
+  // gesture and should not look like a different screen.
+  //
+  // EVERY SWATCH IS THE MARK ITSELF, drawn by the same DecalArt the machine
+  // uses. A list of names would be a list of things a player cannot picture,
+  // and would let the shop and the hull disagree about what a decal is.
+  _drawDecalPane(rx, ly, who) {
+    const s = Display.safe;
+    const ctx = R.ctx;
+    const groups = this._decalGroups();
+    const total = groups.reduce((a, g) => a + g.decals.length, 0);
+    const worn = Paint.decals(who);
+    R.smallText('MARKS YOU OWN  —  ' + total,
+      rx, ly - 70, 24, this.pane === 1 ? CONFIG.COLOR.yellow : CONFIG.COLOR.steel);
+    if (!total) {
+      R.smallText('NONE YET. MARKS ARE FOUND, NEVER BOUGHT.',
+        rx, ly - 40, 20, CONFIG.COLOR.steel);
+      return;
+    }
+    R.smallText('UP AND DOWN CHANGE GROUP  —  ' + worn.length + ' OF ' +
+      Paint.maxDecals(who) + ' WORN', rx, ly - 40, 20, CONFIG.COLOR.grid);
+
+    const sw = 74, cols = 6;
+    let y = ly;
+    for (let gi = 0; gi < groups.length; gi++) {
+      const g = groups[gi];
+      const onG = this.pane === 1 && gi === this.paintSet;
+      if (y > s.bottom - 260) break;
+      R.smallText(g.id.toUpperCase(), rx, y, 19,
+        onG ? CONFIG.COLOR.yellow : CONFIG.COLOR.steel);
+      y += 26;
+      const yy = y;
+      g.decals.forEach((id, di) => {
+        const col = di % cols, rowN = Math.floor(di / cols);
+        const x = rx + col * (sw + 10);
+        const sy = yy + rowN * (sw + 10);
+        if (sy > s.bottom - 230) return;
+        const on = onG && di === this.listIdx;
+        const isWorn = worn.some(d => d.id === id);
+        // WORN IS A FILLED PLATE, not a tick in a corner: the state you are
+        // asking about is "is this on my machine", and a plate reads that at
+        // a glance across six of them.
+        ctx.fillStyle = isWorn ? '#2c3a66' : '#171d30';
+        ctx.fillRect(x, sy, sw, sw);
+        if (typeof DecalArt !== 'undefined') {
+          DecalArt.draw(ctx, { id }, x + sw / 2, sy + sw / 2, sw * 0.3);
+        }
+        ctx.strokeStyle = on ? CONFIG.COLOR.yellow
+          : (isWorn ? CONFIG.COLOR.cyan : CONFIG.COLOR.ink);
+        ctx.lineWidth = on ? 6 : (isWorn ? 4 : 3);
+        ctx.strokeRect(x, sy, sw, sw);
+      });
+      y += Math.ceil(g.decals.length / cols) * (sw + 10) + 18;
+    }
+
+    const cg = groups[Math.min(this.paintSet, groups.length - 1)];
+    const cur = cg && cg.decals[Math.min(this.listIdx, cg.decals.length - 1)];
+    if (cur) {
+      const isWorn = worn.some(d => d.id === cur);
+      R.smallText(DecalArt.name(cur) + (isWorn ? '  —  WORN' : ''),
+        rx, s.bottom - 210, 24, isWorn ? CONFIG.COLOR.cyan : CONFIG.COLOR.yellow);
+      // THE NOTE FROM THE CATALOGUE, which is where a decal's meaning lives.
+      // The SCRAP MARK's note is the whole reason that decal exists, and a
+      // shop that shows the picture and not the sentence is showing half of
+      // it. Wrapped, because two of the notes are long.
+      // THE CATALOGUE'S NOTE IS HALF FLAVOUR AND HALF DESIGN NOTE. The SCRAP
+      // MARK's reads "the mark that got CLIP reclassified. Wearable, or
+      // painted over. If still worn at Central Dispatch, Mags gets ONE line."
+      // The first sentence is the player's; the rest is a note to whoever
+      // writes that Mags line. Showing all of it needed three lines the pane
+      // does not have and came out as an ellipsis mid-word, which told the
+      // player less than the one sentence does.
+      const full = (DECALS[cur] || {}).note;
+      const note = full ? String(full).split('.')[0] : null;
+      if (note) {
+        // WRAPPED AGAINST THE BUTTONS, NOT AGAINST THE SCREEN EDGE. BACK and
+        // TAKE IT OUT are drawn at `s.right - 330` and they are drawn AFTER
+        // this, so a line measured to the screen edge is a line with a button
+        // on top of it. The first version of this screenshot had the SCRAP
+        // MARK's own note -- the sentence that is the whole reason the decal
+        // exists -- disappearing under BACK mid-word.
+        // AND IT STOPS ABOVE THE HINT LINE. The hint is drawn across the
+        // bottom at `s.bottom - 132`, so a third line of note at
+        // `s.bottom - 134` sits straight on top of it -- which is exactly
+        // what the second version of this screenshot showed. The note is
+        // given the space that is actually free and no more; a note too long
+        // for it is cut with an ellipsis rather than drawn over something.
+        const btnLeft = s.right - 330 - 20;
+        const noteTop = s.bottom - 178;
+        const room = Math.max(1, Math.floor(
+          ((s.bottom - GARAGE_UI.HINT_UP - 8) - noteTop) / 22));
+        let lines = R.wrapText(note.toUpperCase(), btnLeft - rx, 18);
+        if (lines.length > room) {
+          lines = lines.slice(0, room);
+          lines[room - 1] = lines[room - 1] + '...';
+        }
+        for (let i = 0; i < lines.length; i++) {
+          R.smallText(lines[i], rx, noteTop + i * 22, 18, CONFIG.COLOR.steel);
+        }
+      }
+    }
+  }
+
+  // SAVED COLOURWAYS (D373, question 10). `PAINT_RULES.presets` has said
+  // "named colourways, apply to any machine" since Block 12 and
+  // `Paint.savePreset` has worked for just as long, with nothing calling it.
+  _drawPresetPane(rx, ly, who) {
+    const s = Display.safe;
+    const ctx = R.ctx;
+    const items = this._presetRows();
+    R.smallText('COLOURWAYS  —  ' + (items.length - 1),
+      rx, ly - 70, 24, this.pane === 1 ? CONFIG.COLOR.yellow : CONFIG.COLOR.steel);
+    R.smallText('COLOURS ONLY. A COLOURWAY NEVER CARRIES A MARK.',
+      rx, ly - 40, 20, CONFIG.COLOR.grid);
+
+    const rh = 76;
+    items.forEach((it, i) => {
+      const y = ly + i * (rh + 10);
+      if (y > s.bottom - 250) return;
+      const on = this.pane === 1 && i === this.listIdx;
+      ctx.fillStyle = on ? '#2c3a66' : '#1a2138';
+      ctx.fillRect(rx, y, 560, rh);
+      ctx.strokeStyle = on ? CONFIG.COLOR.yellow : CONFIG.COLOR.steel;
+      ctx.lineWidth = on ? 5 : 3;
+      ctx.strokeRect(rx, y, 560, rh);
+      if (it.save) {
+        R.smallText('SAVE WHAT IS ON THIS MACHINE', rx + 22, y + 16, 24,
+          CONFIG.COLOR.yellow);
+        R.smallText('NAMED AFTER ITS BODY COLOUR', rx + 22, y + 46, 19,
+          CONFIG.COLOR.steel);
+        return;
+      }
+      // The four colours, as four blocks. Same argument as the slot swatch:
+      // a name is not a colour, and a colourway is four of them.
+      this._paintSlots().forEach((sid, k) => {
+        const hex = it.preset.slots[sid];
+        const bx = rx + 22 + k * 46;
+        ctx.fillStyle = hex || '#232b44';
+        ctx.fillRect(bx, y + 18, 40, 40);
+        ctx.strokeStyle = CONFIG.COLOR.ink; ctx.lineWidth = 3;
+        ctx.strokeRect(bx, y + 18, 40, 40);
+      });
+      R.smallText(it.preset.name, rx + 226, y + 16, 24, CONFIG.COLOR.cyan);
+      const n = this._paintSlots().filter(sid => it.preset.slots[sid]).length;
+      R.smallText(n + ' OF 4 SET', rx + 226, y + 46, 19, CONFIG.COLOR.steel);
+    });
   }
 
   // The name of a colour, found by its hex, so the slot list can say

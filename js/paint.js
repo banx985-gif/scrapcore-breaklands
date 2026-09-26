@@ -304,6 +304,420 @@ const Paint = {
   },
 };
 
+// ===========================================================================
+// WHAT A DECAL LOOKS LIKE (D373, question 10)
+//
+// `DECALS` in js/paintdata.js has described twenty-four marks since Block 12.
+// `Paint.addDecal` has been able to put one on a machine for just as long.
+// NOTHING HAS EVER DRAWN ONE. The catalogue, the unlock rules, the four-per-
+// machine limit and the HAND's `unique` flag were all real and all invisible —
+// the same shape of hole as the paint shop itself, which had rules and no
+// screen until Block 12's tab, and `Paint.colourFor`, which was written as a
+// renderer hook and called by nothing for three blocks.
+//
+// CANVAS PRIMITIVES ONLY (standing rule 5). A decal is not a sprite and must
+// not become one: there are twenty-four of them, they are stamped on a moving
+// machine at a dozen sizes, and a pack of twenty-four small images is a pack
+// somebody has to keep in step with the catalogue. Drawn code is drawn from
+// the same data that lists them, so a decal added to `DECALS` gets a mark.
+//
+// THEY READ ON ANY PAINT. Every mark draws with an ink underlay and a light
+// fill, because the machine underneath can be any of sixty colours and a mark
+// that vanishes on FOUNDRY BLACK is not a mark. That is why `colour` on a
+// worn decal tints the FILL and never the outline.
+//
+// AND THEY ARE NOT A FACTION READ. Decals are cosmetic like paint, and the
+// same rule protects them: nothing here draws in hostile red, and a decal is
+// drawn UNDER the reactor ring so it can never compete with the one
+// affordance that must always win.
+const DecalArt = {
+  // The default mark colour: bone, which reads against both the dark half and
+  // the bright half of every set in the catalogue.
+  FILL: '#e8e4d8',
+  INK: '#0b0e1a',
+
+  // ---- the primitives every mark is built from --------------------------
+  // `r` is the mark's radius. Everything below is expressed as a fraction of
+  // it, so one decal drawn at 14 px on a machine and at 40 px in the shop is
+  // the same mark rather than two.
+  _bar(ctx, x, y, w, h, fill) {
+    ctx.fillStyle = fill;
+    ctx.fillRect(x - w / 2, y - h / 2, w, h);
+  },
+  _ring(ctx, r, lw, col) {
+    ctx.strokeStyle = col; ctx.lineWidth = lw;
+    ctx.beginPath(); ctx.arc(0, 0, r, 0, Math.PI * 2); ctx.stroke();
+  },
+  _poly(ctx, pts, fill, stroke, lw) {
+    ctx.beginPath();
+    for (let i = 0; i < pts.length; i++) {
+      if (i === 0) ctx.moveTo(pts[i][0], pts[i][1]);
+      else ctx.lineTo(pts[i][0], pts[i][1]);
+    }
+    ctx.closePath();
+    if (fill) { ctx.fillStyle = fill; ctx.fill(); }
+    if (stroke) { ctx.strokeStyle = stroke; ctx.lineWidth = lw || 2; ctx.stroke(); }
+  },
+  _stroke(ctx, pts, col, lw) {
+    ctx.strokeStyle = col; ctx.lineWidth = lw;
+    ctx.lineCap = 'round';
+    ctx.beginPath();
+    for (let i = 0; i < pts.length; i++) {
+      if (i === 0) ctx.moveTo(pts[i][0], pts[i][1]);
+      else ctx.lineTo(pts[i][0], pts[i][1]);
+    }
+    ctx.stroke();
+  },
+  // Stencil glyphs, drawn as text because a numeral IS text and hand-drawing
+  // digits out of bars would be worse at every size. The font is the game's
+  // own, so a decal and a HUD readout are the same typeface.
+  _glyph(ctx, s, r, fill) {
+    ctx.font = '900 ' + (r * 1.5).toFixed(0) + 'px "Arial Black", Arial, sans-serif';
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'middle';
+    ctx.fillStyle = this.INK;
+    ctx.fillText(s, r * 0.08, r * 0.08);
+    ctx.fillStyle = fill;
+    ctx.fillText(s, 0, 0);
+  },
+
+  // ---- THE MARKS ---------------------------------------------------------
+  // One entry per id in DECALS. Each draws in a space centred on 0,0 with the
+  // mark's radius `r`, already rotated and scaled by draw() below.
+  MARKS: {
+    // --- NUMBERS: free from the start. "Everyone wants a number." ---------
+    numerals(ctx, r, f, D) { D._glyph(ctx, '44', r, f); },
+    tallyMarks(ctx, r, f, D) {
+      for (let i = 0; i < 4; i++) {
+        const x = -r * 0.62 + i * r * 0.41;
+        D._stroke(ctx, [[x, -r * 0.62], [x, r * 0.62]], D.INK, r * 0.26);
+        D._stroke(ctx, [[x, -r * 0.62], [x, r * 0.62]], f, r * 0.14);
+      }
+      // the fifth, struck through — which is what makes it a TALLY
+      D._stroke(ctx, [[-r * 0.8, r * 0.5], [r * 0.7, -r * 0.5]], D.INK, r * 0.26);
+      D._stroke(ctx, [[-r * 0.8, r * 0.5], [r * 0.7, -r * 0.5]], f, r * 0.14);
+    },
+
+    // --- INDUSTRIAL: Ironworks and The Digs -------------------------------
+    hazardStripes(ctx, r, f, D) {
+      ctx.save();
+      ctx.beginPath(); ctx.rect(-r, -r * 0.6, r * 2, r * 1.2); ctx.clip();
+      ctx.fillStyle = D.INK; ctx.fillRect(-r, -r * 0.6, r * 2, r * 1.2);
+      ctx.fillStyle = f;
+      for (let i = -3; i < 4; i++) {
+        D._poly(ctx, [[i * r * 0.5, -r * 0.6], [i * r * 0.5 + r * 0.26, -r * 0.6],
+                      [i * r * 0.5 + r * 0.66, r * 0.6], [i * r * 0.5 + r * 0.4, r * 0.6]], f);
+      }
+      ctx.restore();
+      ctx.strokeStyle = D.INK; ctx.lineWidth = r * 0.12;
+      ctx.strokeRect(-r, -r * 0.6, r * 2, r * 1.2);
+    },
+    highVoltage(ctx, r, f, D) {
+      // the bolt, in a triangle: the one industrial mark everybody reads
+      D._poly(ctx, [[0, -r], [r * 0.92, r * 0.72], [-r * 0.92, r * 0.72]],
+              D.INK, f, r * 0.16);
+      D._poly(ctx, [[r * 0.16, -r * 0.5], [-r * 0.3, r * 0.06],
+                    [-r * 0.02, r * 0.06], [-r * 0.18, r * 0.5],
+                    [r * 0.3, -r * 0.1], [r * 0.0, -r * 0.1]], f);
+    },
+    loadRating(ctx, r, f, D) {
+      // a weight box with a figure in it
+      D._poly(ctx, [[-r * 0.9, -r * 0.8], [r * 0.9, -r * 0.8],
+                    [r * 0.9, r * 0.8], [-r * 0.9, r * 0.8]], D.INK, f, r * 0.14);
+      D._glyph(ctx, 'T', r * 0.8, f);
+    },
+    inspection(ctx, r, f, D) {
+      // a stamped circle with a tick: passed
+      D._ring(ctx, r * 0.86, r * 0.3, D.INK);
+      D._ring(ctx, r * 0.86, r * 0.16, f);
+      D._stroke(ctx, [[-r * 0.42, 0], [-r * 0.1, r * 0.38], [r * 0.48, -r * 0.42]],
+                D.INK, r * 0.3);
+      D._stroke(ctx, [[-r * 0.42, 0], [-r * 0.1, r * 0.38], [r * 0.48, -r * 0.42]],
+                f, r * 0.17);
+    },
+    weldSeam(ctx, r, f, D) {
+      // a bead of weld: overlapping lozenges along a line
+      for (let i = -2; i <= 2; i++) {
+        const x = i * r * 0.42;
+        D._poly(ctx, [[x - r * 0.28, 0], [x, -r * 0.34], [x + r * 0.28, 0],
+                      [x, r * 0.34]], D.INK);
+        D._poly(ctx, [[x - r * 0.2, 0], [x, -r * 0.24], [x + r * 0.2, 0],
+                      [x, r * 0.24]], f);
+      }
+    },
+    liftingPoint(ctx, r, f, D) {
+      // a hook eye over a cross: where the crane takes it
+      D._ring(ctx, r * 0.4, r * 0.32, D.INK);
+      D._ring(ctx, r * 0.4, r * 0.17, f);
+      D._stroke(ctx, [[0, r * 0.4], [0, r * 0.95]], D.INK, r * 0.3);
+      D._stroke(ctx, [[0, r * 0.4], [0, r * 0.95]], f, r * 0.16);
+      D._stroke(ctx, [[-r * 0.6, r * 0.95], [r * 0.6, r * 0.95]], D.INK, r * 0.3);
+      D._stroke(ctx, [[-r * 0.6, r * 0.95], [r * 0.6, r * 0.95]], f, r * 0.16);
+    },
+
+    // --- CIVIC: BOLT mission 2 and The Sprawl -----------------------------
+    transitRoundel(ctx, r, f, D) {
+      D._ring(ctx, r * 0.78, r * 0.36, D.INK);
+      D._ring(ctx, r * 0.78, r * 0.2, f);
+      D._bar(ctx, 0, 0, r * 2, r * 0.44, D.INK);
+      D._bar(ctx, 0, 0, r * 2, r * 0.28, f);
+    },
+    streetSign(ctx, r, f, D) {
+      D._poly(ctx, [[-r, -r * 0.42], [r, -r * 0.42], [r, r * 0.42], [-r, r * 0.42]],
+              D.INK, f, r * 0.14);
+      for (let i = -1; i <= 1; i++) D._bar(ctx, i * r * 0.44, 0, r * 0.2, r * 0.42, f);
+    },
+    postalMark(ctx, r, f, D) {
+      // a franking ring with bars through it
+      D._ring(ctx, r * 0.9, r * 0.26, D.INK);
+      D._ring(ctx, r * 0.9, r * 0.14, f);
+      for (let i = -1; i <= 1; i++) {
+        D._stroke(ctx, [[-r * 0.62, i * r * 0.32], [r * 0.62, i * r * 0.32]], f, r * 0.13);
+      }
+    },
+    schoolCrest(ctx, r, f, D) {
+      D._poly(ctx, [[0, -r], [r * 0.82, -r * 0.5], [r * 0.62, r * 0.9],
+                    [0, r], [-r * 0.62, r * 0.9], [-r * 0.82, -r * 0.5]],
+              D.INK, f, r * 0.14);
+      D._glyph(ctx, 'S', r * 0.72, f);
+    },
+    fireService(ctx, r, f, D) {
+      // a helmet crest over a bar
+      D._poly(ctx, [[0, -r * 0.9], [r * 0.9, r * 0.2], [-r * 0.9, r * 0.2]],
+              D.INK, f, r * 0.14);
+      D._bar(ctx, 0, r * 0.62, r * 1.7, r * 0.42, D.INK);
+      D._bar(ctx, 0, r * 0.62, r * 1.5, r * 0.26, f);
+    },
+    municipalSeal(ctx, r, f, D) {
+      // a cogged seal: the civic stamp
+      ctx.save();
+      for (let i = 0; i < 10; i++) {
+        ctx.rotate(Math.PI * 2 / 10);
+        D._bar(ctx, 0, -r * 0.9, r * 0.24, r * 0.3, D.INK);
+      }
+      ctx.restore();
+      D._ring(ctx, r * 0.72, r * 0.34, D.INK);
+      D._ring(ctx, r * 0.72, r * 0.19, f);
+      D._ring(ctx, r * 0.3, r * 0.16, f);
+    },
+
+    // --- COMMERCIAL: Neon Cut ---------------------------------------------
+    neonGlyph(ctx, r, f, D) {
+      // a shopfront squiggle — the Cut's own alphabet, meaning nothing
+      D._stroke(ctx, [[-r * 0.8, r * 0.7], [-r * 0.3, -r * 0.8], [r * 0.1, r * 0.3],
+                      [r * 0.5, -r * 0.8], [r * 0.85, r * 0.7]], D.INK, r * 0.4);
+      D._stroke(ctx, [[-r * 0.8, r * 0.7], [-r * 0.3, -r * 0.8], [r * 0.1, r * 0.3],
+                      [r * 0.5, -r * 0.8], [r * 0.85, r * 0.7]], f, r * 0.22);
+    },
+    adBlock(ctx, r, f, D) {
+      D._poly(ctx, [[-r, -r * 0.7], [r, -r * 0.7], [r, r * 0.7], [-r, r * 0.7]],
+              D.INK, f, r * 0.14);
+      for (let i = 0; i < 3; i++) {
+        D._bar(ctx, -r * 0.12, -r * 0.34 + i * r * 0.34, r * 1.4 - i * r * 0.36,
+               r * 0.16, f);
+      }
+    },
+    barcode(ctx, r, f, D) {
+      ctx.fillStyle = D.INK;
+      ctx.fillRect(-r, -r * 0.7, r * 2, r * 1.4);
+      const w = [0.10, 0.05, 0.14, 0.05, 0.08, 0.16, 0.05, 0.11];
+      let x = -r * 0.9;
+      ctx.fillStyle = f;
+      for (let i = 0; i < w.length; i++) {
+        if (i % 2 === 0) ctx.fillRect(x, -r * 0.58, r * w[i] * 2, r * 1.16);
+        x += r * w[i] * 2.2;
+      }
+    },
+    vendingLogo(ctx, r, f, D) {
+      // a cup: the most disposable object in the game's world
+      D._poly(ctx, [[-r * 0.6, -r * 0.7], [r * 0.6, -r * 0.7],
+                    [r * 0.38, r * 0.85], [-r * 0.38, r * 0.85]],
+              D.INK, f, r * 0.14);
+      D._bar(ctx, 0, -r * 0.5, r * 1.06, r * 0.2, f);
+    },
+    brandMark(ctx, r, f, D) {
+      // a swoosh in a box: a brand nobody remembers
+      D._poly(ctx, [[-r, -r * 0.8], [r, -r * 0.8], [r, r * 0.8], [-r, r * 0.8]], D.INK);
+      D._stroke(ctx, [[-r * 0.7, r * 0.35], [-r * 0.1, -r * 0.4], [r * 0.75, -r * 0.1]],
+                f, r * 0.26);
+    },
+    saleStarburst(ctx, r, f, D) {
+      const pts = [];
+      for (let i = 0; i < 20; i++) {
+        const a = i * Math.PI / 10;
+        const rr = (i % 2 === 0) ? r : r * 0.58;
+        pts.push([Math.cos(a) * rr, Math.sin(a) * rr]);
+      }
+      D._poly(ctx, pts, D.INK);
+      const inner = pts.map(p => [p[0] * 0.82, p[1] * 0.82]);
+      D._poly(ctx, inner, f);
+    },
+
+    // --- NETWORK: the machines' own markings ------------------------------
+    assetTag(ctx, r, f, D) {
+      // a riveted plate with a number on it
+      D._poly(ctx, [[-r, -r * 0.6], [r, -r * 0.6], [r, r * 0.6], [-r, r * 0.6]],
+              D.INK, f, r * 0.14);
+      D._glyph(ctx, '7', r * 0.62, f);
+      for (const sx of [-1, 1]) D._bar(ctx, sx * r * 0.8, 0, r * 0.16, r * 0.16, f);
+    },
+    classStamp(ctx, r, f, D) {
+      // a class letter inside a lozenge
+      D._poly(ctx, [[0, -r], [r, 0], [0, r], [-r, 0]], D.INK, f, r * 0.14);
+      D._glyph(ctx, 'C', r * 0.72, f);
+    },
+    workOrderGlyph(ctx, r, f, D) {
+      // a clipboard tick-box grid: a job, filed
+      D._poly(ctx, [[-r * 0.85, -r], [r * 0.85, -r], [r * 0.85, r], [-r * 0.85, r]],
+              D.INK, f, r * 0.14);
+      for (let i = 0; i < 3; i++) {
+        D._bar(ctx, -r * 0.42, -r * 0.5 + i * r * 0.5, r * 0.3, r * 0.3, f);
+        D._bar(ctx, r * 0.22, -r * 0.5 + i * r * 0.5, r * 0.7, r * 0.14, f);
+      }
+    },
+
+    // THE MARK THAT GOT CLIP RECLASSIFIED.
+    //
+    // This is the one the whole question named: "the SCRAP MARK the player
+    // finds on the belt has to be wearable at the end of it." It is a
+    // condemnation stamp — the mark an inspector sprays on a machine that is
+    // going to the furnace — so it is drawn as exactly that: a hard slash
+    // through a ring, sprayed rather than stencilled, and deliberately the
+    // least tidy mark in the catalogue.
+    //
+    // The player wears the thing that said they were rubbish. Nothing else in
+    // the list is drawn crooked; this one is, by 0.14 radians, and it does not
+    // straighten up.
+    scrapMark(ctx, r, f, D) {
+      ctx.save();
+      ctx.rotate(0.14);
+      D._ring(ctx, r * 0.84, r * 0.4, D.INK);
+      D._ring(ctx, r * 0.84, r * 0.24, f);
+      // the slash: through the ring, past both edges, the way a spray line is
+      D._stroke(ctx, [[-r * 1.05, r * 0.85], [r * 1.05, -r * 0.85]], D.INK, r * 0.46);
+      D._stroke(ctx, [[-r * 1.05, r * 0.85], [r * 1.05, -r * 0.85]], f, r * 0.28);
+      // the overspray, which is what makes it sprayed and not printed
+      ctx.globalAlpha = 0.5;
+      ctx.fillStyle = f;
+      for (const d of [[-0.9, 0.95], [0.95, -0.92], [-0.55, 1.0], [0.72, -1.02]]) {
+        ctx.beginPath();
+        ctx.arc(r * d[0], r * d[1], r * 0.09, 0, Math.PI * 2);
+        ctx.fill();
+      }
+      ctx.globalAlpha = 1;
+      ctx.restore();
+    },
+
+    // --- PERSONAL ---------------------------------------------------------
+    // "The ONLY decal a person made. One place. Never repeated, never sold."
+    // So it is the only mark here that is not geometry: a handprint, drawn
+    // with the palm and four fingers, at a slight angle, because a hand
+    // pressed on a hull is not square to anything.
+    hand(ctx, r, f, D) {
+      ctx.save();
+      ctx.rotate(-0.22);
+      const palm = () => {
+        ctx.beginPath();
+        ctx.ellipse(0, r * 0.34, r * 0.56, r * 0.48, 0, 0, Math.PI * 2);
+        ctx.fill();
+      };
+      const fingers = (len) => {
+        for (let i = 0; i < 4; i++) {
+          const a = -Math.PI / 2 + (i - 1.5) * 0.42;
+          ctx.save();
+          ctx.translate(Math.cos(a) * r * 0.36, r * 0.2 + Math.sin(a) * r * 0.36);
+          ctx.rotate(a + Math.PI / 2);
+          ctx.beginPath();
+          ctx.ellipse(0, -r * len * 0.5, r * 0.15, r * len * 0.55, 0, 0, Math.PI * 2);
+          ctx.fill();
+          ctx.restore();
+        }
+        // the thumb
+        ctx.save();
+        ctx.translate(-r * 0.48, r * 0.42);
+        ctx.rotate(-0.9);
+        ctx.beginPath();
+        ctx.ellipse(0, 0, r * 0.15, r * 0.34, 0, 0, Math.PI * 2);
+        ctx.fill();
+        ctx.restore();
+      };
+      ctx.fillStyle = D.INK; ctx.save(); ctx.scale(1.18, 1.18); palm(); fingers(0.82); ctx.restore();
+      ctx.fillStyle = f; palm(); fingers(0.78);
+      ctx.restore();
+    },
+    spare(ctx, r, f, D) {
+      // a blank plate — "spare" is exactly what it says, and a mark that
+      // pretended otherwise would be inventing content.
+      D._poly(ctx, [[-r * 0.85, -r * 0.7], [r * 0.85, -r * 0.7],
+                    [r * 0.85, r * 0.7], [-r * 0.85, r * 0.7]], D.INK, f, r * 0.16);
+    },
+  },
+
+  // Is there a mark for this id? Asked by the shop, so an id in DECALS with
+  // no mark here is shown as missing rather than drawn as nothing.
+  has(id) { return typeof this.MARKS[id] === 'function'; },
+
+  // DRAW ONE. `d` is a worn decal — { id, x, y, scale, rot, colour } — the
+  // record Paint.addDecal writes, so the shop and the machine draw the same
+  // thing from the same place.
+  draw(ctx, d, cx, cy, r) {
+    if (!d) return false;
+    const m = this.MARKS[d.id];
+    if (!m) return false;
+    ctx.save();
+    ctx.translate(cx + (d.x || 0), cy + (d.y || 0));
+    ctx.rotate(d.rot || 0);
+    ctx.lineJoin = 'round';
+    m(ctx, r * (d.scale === undefined ? 1 : d.scale), d.colour || this.FILL, this);
+    ctx.restore();
+    return true;
+  },
+
+  // WHERE THE FOUR GO ON A MACHINE.
+  //
+  // `maxDecalsPerMachine` is 4 and the shop does not offer placement — a
+  // drag-and-rotate editor on a touch pad is a different job and a worse one.
+  // Four stations round the hull instead, so four marks read as four marks
+  // and never sit on top of each other. Index in the worn list picks the
+  // station, which makes the order you applied them the order they sit in.
+  // Pushed out to the hull rather than sat on the middle of it: the reactor
+  // ring and its halo own the centre (radius 25, halo 40 in player.js) and a
+  // mark drawn under them is a mark nobody sees. Measured off the first
+  // screenshot, which is the only thing that could have shown it.
+  STATIONS: [
+    [-0.54, -0.50], [0.54, -0.50], [-0.54, 0.54], [0.54, 0.54],
+  ],
+
+  // Stamp everything worn on `who` onto a machine at cx,cy with body radius R.
+  //
+  // UNDER THE REACTOR RING, drawn by the caller after this: the ring is "the
+  // load-bearing visual affordance in the ENTIRE GAME" and a cosmetic mark
+  // does not get to compete with it.
+  drawWorn(ctx, who, cx, cy, R_) {
+    if (typeof Paint === 'undefined' || !who) return 0;
+    const worn = Paint.decals(who);
+    if (!worn.length) return 0;
+    let n = 0;
+    for (let i = 0; i < worn.length; i++) {
+      const st = this.STATIONS[i % this.STATIONS.length];
+      const d = worn[i];
+      if (this.draw(ctx, { id: d.id, colour: d.colour,
+                           x: st[0] * R_ + (d.x || 0),
+                           y: st[1] * R_ + (d.y || 0),
+                           rot: d.rot || 0,
+                           scale: (d.scale === undefined ? 1 : d.scale) },
+                    cx, cy, R_ * 0.24)) n++;
+    }
+    return n;
+  },
+
+  // The name a player sees. 'scrapMark' reads as SCRAP MARK, for the same
+  // reason a colour does: the ids are keys and a player never sees a key.
+  name(id) {
+    return String(id).replace(/([a-z0-9])([A-Z])/g, '$1 $2').toUpperCase();
+  },
+};
+
 // ---------------------------------------------------------------------------
 // THE SHAPE CUE
 //

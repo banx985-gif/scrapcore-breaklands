@@ -59,6 +59,34 @@ const World = {
   entities: [],         // THE one entity list: live chunks + owned
   obstacles: [],        // flattened collision, rebuilt with the entity list
 
+  // ---- THE REVISION, AND WHY IT EXISTS (D373, question 24) ---------------
+  //
+  // `entities` is rebuilt by _reflow(). GameState keeps its OWN copy of that
+  // list plus four index arrays built off it, and until this counter existed
+  // the only thing that told it to take a fresh copy was `World.update`
+  // returning true — that is, a chunk loading or unloading.
+  //
+  // Everything else that reflows told nobody. Kill a machine and leave parts
+  // bolted on: the hulk goes into this list and is not in the one the screen
+  // draws from, so **the wreck you are meant to tow home is invisible while
+  // you stand beside it**, until you have driven far enough to stream a
+  // chunk. It was the same for a thrown decoy, a mission object and a
+  // released wreck — one bug with six doors, and D370 could only see the one
+  // it walked through.
+  //
+  // So _reflow() bumps this, GameState remembers what it last adopted, and a
+  // mismatch costs one re-adopt on the NEXT frame. Measured before it was
+  // committed (tests/measure_adopt.js), in the Ironworks, the busiest
+  // district: the re-adopt is 0.0225 ms median and 0.039 ms at p95 against a
+  // 16.67 ms frame — 0.13% of one frame, at most once per kill. The compare
+  // that runs on every frame is 0.0002 ms.
+  //
+  // A COUNTER RATHER THAN A CALLBACK, because the alternative is every caller
+  // of _reflow() remembering to poke the game state, which is the arrangement
+  // that produced the bug. Nothing can forget to bump a number it does not
+  // know about.
+  rev: 0,
+
   // Counters the debug overlay reads. Kept here rather than computed on demand
   // so the overlay costs nothing when it is switched off.
   stats: { built: 0, dropped: 0, lastBuildMs: 0 },
@@ -427,6 +455,9 @@ const World = {
     }
     this.entities = ents;
     this.obstacles = obs;
+    // THE ONE LINE THAT MAKES THE WRECK VISIBLE. Every rebuild of this list
+    // is announced here, so no caller has to remember to announce its own.
+    this.rev++;
   },
 
   // ---- ownership ----------------------------------------------------------
